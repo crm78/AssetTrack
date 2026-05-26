@@ -44,8 +44,8 @@ jobs:
             -sdk iphoneos \
             -configuration Release \
             build \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_ALLOWED=YES \
             CONFIGURATION_BUILD_DIR=${{ runner.temp }}/build 2>&1 | tee xcodebuild.log
           EXIT_CODE=$?
           if [ $EXIT_CODE -ne 0 ]; then
