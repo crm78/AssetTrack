@@ -27,40 +27,51 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Generate iOS project and install Pods
-        run: npx expo prebuild --platform ios --no-install
+      - name: Clean and regenerate iOS project
+        run: |
+          rm -rf ios
+          npx expo prebuild --clean --platform ios --no-install
 
-      - name: Install CocoaPods
+      - name: Install CocoaPods with verbose log
         run: |
           cd ios
-          pod install
+          pod install --verbose
 
-      - name: Patch ExpoModulesJSI build script phase
+      - name: Disable ExpoModulesJSI xcframework build script
         run: |
-          cd ios
-          find Pods -name "*.pbxproj" -exec sed -i '' 's/shellScript = ".*Build ExpoModulesJSI xcframework.*/shellScript = "echo patched"/' {} \; 2>/dev/null || true
-          find Pods -name "*.pbxproj" -exec sed -i '' 's/shellScript = ".*ExpoModulesJSI.*xcframework.*/shellScript = "echo patched"/' {} \; 2>/dev/null || true
-          echo "Patched ExpoModulesJSI build script phase in pbxproj files"
+          # Insert exit 0 at the top of build-xcframework.sh so it
+          # always succeeds without doing any real work. The stub
+          # xcframework created by pod install's prepare_command is
+          # sufficient for an unsigned CI build.
+          SCRIPT="node_modules/expo-modules-jsi/apple/scripts/build-xcframework.sh"
+          if [ -f "$SCRIPT" ]; then
+            sed -i '' '1s/^/exit 0\n/' "$SCRIPT"
+            echo "Inserted exit 0 at top of $SCRIPT"
+          else
+            echo "ERROR: Script not found at $SCRIPT"
+            exit 1
+          fi
 
-      - name: Build .app bundle (unsigned)
-        continue-on-error: true
+      - name: Archive .xcarchive (unsigned)
         run: |
           set -o pipefail
           cd ios
-          xcodebuild \
+          xcodebuild archive \
             -workspace AssetTrack.xcworkspace \
             -scheme AssetTrack \
             -sdk iphoneos \
             -configuration Release \
             -destination 'generic/platform=iOS' \
-            build \
-            CODE_SIGN_IDENTITY="-" \
+            -archivePath ${{ runner.temp }}/AssetTrack.xcarchive \
+            CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
             2>&1 | tee ${{ runner.temp }}/xcodebuild.log
 
-      - name: Extract Swift/compiler errors from build log
-        if: always()
+      - name: Extract errors from build log
+        if: failure()
         run: |
           echo "=== Swift compilation errors ==="
           grep -n "error:" ${{ runner.temp }}/xcodebuild.log | grep -i "swift" | head -30 || echo "(no Swift errors found)"
@@ -69,34 +80,37 @@ jobs:
           grep -n "error:" ${{ runner.temp }}/xcodebuild.log | head -30 || echo "(no errors found)"
           echo ""
           echo "=== FAILED lines ==="
-          grep -n "BUILD FAILED\|FAILED\|failed\|error:" ${{ runner.temp }}/xcodebuild.log | head -20 || echo "(no failure lines found)"
+          grep -n "BUILD FAILED\|FAILED\|The following build commands failed" ${{ runner.temp }}/xcodebuild.log | head -10 || echo "(no failure lines found)"
+          exit 1
 
-      - name: Check xcodebuild exit and continue if successful
-        if: always()
+      - name: Package IPA from .xcarchive
         run: |
-          if grep -q "BUILD SUCCEEDED" ${{ runner.temp }}/xcodebuild.log; then
-            echo "BUILD SUCCEEDED - continuing packaging"
-          else
-            echo "BUILD FAILED - check errors above"
+          XCARCHIVE="${{ runner.temp }}/AssetTrack.xcarchive"
+          APP_PATH="${XCARCHIVE}/Products/Applications/AssetTrack.app"
+          echo "xcarchive: $XCARCHIVE"
+          echo "app path: $APP_PATH"
+
+          if [ ! -d "$APP_PATH" ]; then
+            echo "ERROR: .app not found at $APP_PATH"
+            echo "Contents of xcarchive:"
+            find "$XCARCHIVE" -maxdepth 5 -type d 2>/dev/null || true
             exit 1
           fi
 
-      - name: Ad-hoc sign and package IPA
-        run: |
-          echo "Searching for AssetTrack.app..."
-          APP=$(find ~/Library/Developer/Xcode/DerivedData -name "AssetTrack.app" -type d -path "*/Release-iphoneos/*" 2>/dev/null | head -1)
-          if [ -z "$APP" ]; then
-            APP=$(find ~/Library/Developer/Xcode/DerivedData -name "AssetTrack.app" -type d 2>/dev/null | head -1)
-            if [ -z "$APP" ]; then
-              find ~/Library/Developer/Xcode/DerivedData -maxdepth 8 -name "*.app" -type d 2>/dev/null || true
-              exit 1
-            fi
-          fi
-          echo "Found .app at: $APP"
-          codesign --force --sign - --deep "$APP" 2>&1 || echo "Warning: codesign failed (non-fatal)"
+          echo "Found .app at: $APP_PATH"
+          codesign --force --sign - --deep "$APP_PATH" 2>&1 || echo "Warning: codesign failed (non-fatal)"
+
           mkdir -p dist/Payload
-          cp -r "$APP" dist/Payload/
+          cp -r "$APP_PATH" dist/Payload/
           cd dist && zip -r AssetTrack.ipa Payload/
+          echo "IPA created: $(pwd)/AssetTrack.ipa"
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: ${{ runner.temp }}/xcodebuild.log
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
