@@ -37,25 +37,19 @@ jobs:
 
       - name: Fix ExpoModulesJSI for unsigned CI build
         run: |
-          # Replace the real build-xcframework.sh with a stub that:
-          # 1. Creates module.map in each xcframework slice (needed by Swift)
-          # 2. Always exits 0 (the real script fails under CI because the
-          #    nested xcodebuild can't sign, killing the entire build chain)
           SCRIPT="node_modules/expo-modules-jsi/apple/scripts/build-xcframework.sh"
           cp "$SCRIPT" "$SCRIPT.bak"
-          cat > "$SCRIPT" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
-XCFRAMEWORK_PATH="${PACKAGE_DIR}/Products/ExpoModulesJSI.xcframework"
-for slice_dir in "$XCFRAMEWORK_PATH"/*/; do
-  [ -d "$slice_dir" ] || continue
-  framework_dir="${slice_dir}ExpoModulesJSI.framework"
-  modules_dir="$framework_dir/Modules"
-  mkdir -p "$modules_dir"
-  echo 'framework module ExpoModulesJSI { export * }' > "$modules_dir/module.modulemap"
-done
-STUB
+          echo '#!/bin/bash' > "$SCRIPT"
+          echo 'set -euo pipefail' >> "$SCRIPT"
+          echo 'PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' >> "$SCRIPT"
+          echo 'XCFRAMEWORK_PATH="${PACKAGE_DIR}/Products/ExpoModulesJSI.xcframework"' >> "$SCRIPT"
+          echo 'for slice_dir in "$XCFRAMEWORK_PATH"/*/; do' >> "$SCRIPT"
+          echo '  [ -d "$slice_dir" ] || continue' >> "$SCRIPT"
+          echo '  framework_dir="${slice_dir}ExpoModulesJSI.framework"' >> "$SCRIPT"
+          echo '  modules_dir="$framework_dir/Modules"' >> "$SCRIPT"
+          echo '  mkdir -p "$modules_dir"' >> "$SCRIPT"
+          echo '  echo "framework module ExpoModulesJSI { export * }" > "$modules_dir/module.modulemap"' >> "$SCRIPT"
+          echo 'done' >> "$SCRIPT"
           chmod +x "$SCRIPT"
           echo "Replaced build-xcframework.sh with stub"
 
