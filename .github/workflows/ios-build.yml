@@ -30,10 +30,11 @@ jobs:
       - name: Generate iOS project and install Pods
         run: npx expo prebuild --platform ios
 
-      - name: Patch ExpoModulesJSI xcframework build to no-op
+      - name: Patch ExpoModulesJSI xcframework build
         run: |
           cd ios
-          find Pods -name "*.pbxproj" -exec sed -i '' 's/"Build ExpoModulesJSI xcframework"/"echo disabled"/' {} \; 2>/dev/null || true
+          find Pods -name "*.pbxproj" -exec sed -i '' 's/shellScript = ".*Build ExpoModulesJSI xcframework.*/shellScript = "echo patched"/' {} \; 2>/dev/null || true
+          find Pods -name "*.pbxproj" -exec sed -i '' 's/shellScript = ".*ExpoModulesJSI.*xcframework.*/shellScript = "echo patched"/' {} \; 2>/dev/null || true
 
       - name: Build .app bundle
         run: |
@@ -46,21 +47,28 @@ jobs:
             build \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_ALLOWED=YES \
-            CONFIGURATION_BUILD_DIR=${{ runner.temp }}/build 2>&1 | tee xcodebuild.log
+            SYMROOT=${{ runner.temp }}/xcodebuild 2>&1 | tee xcodebuild.log
           EXIT_CODE=$?
           if [ $EXIT_CODE -ne 0 ]; then
-            echo "=== LAST 50 LINES ==="
-            tail -50 xcodebuild.log
-            echo "=== FAILED COMMANDS ==="
-            grep -n "error:" xcodebuild.log | head -10 || true
-            grep -B1 "failed" xcodebuild.log | grep -v "^--$" | head -10 || true
+            echo "=== LAST 80 LINES ==="
+            tail -80 xcodebuild.log
+            echo "=== ERROR LINES ==="
+            grep -n "error:" xcodebuild.log | head -20 || true
+            grep -B1 "failed" xcodebuild.log | head -10 || true
             exit $EXIT_CODE
           fi
 
       - name: Package IPA
         run: |
+          APP_PATH=$(find ${{ runner.temp }}/xcodebuild -name "*.app" -type d | grep -v "\.app\." | head -1)
+          echo "App found at: $APP_PATH"
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: No .app found in build output"
+            find ${{ runner.temp }}/xcodebuild -type d -maxdepth 5 2>/dev/null | head -30
+            exit 1
+          fi
           mkdir -p dist/Payload
-          cp -r ${{ runner.temp }}/build/AssetTrack.app dist/Payload/
+          cp -r "$APP_PATH" dist/Payload/
           cd dist && zip -r AssetTrack.ipa Payload/
 
       - name: Upload IPA
