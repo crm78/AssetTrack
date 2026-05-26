@@ -53,25 +53,6 @@ jobs:
           chmod +x "$SCRIPT"
           echo "Replaced build-xcframework.sh with stub"
 
-      - name: Pre-create stub module maps for remaining pods
-        run: |
-          cd ios
-          BUILT_DIR=$(xcodebuild -workspace AssetTrack.xcworkspace -scheme AssetTrack -sdk iphoneos -configuration Release -showBuildSettings 2>/dev/null | grep "^[[:space:]]*BUILT_PRODUCTS_DIR" | sed 's/.*= //')
-          if [ -z "$BUILT_DIR" ]; then
-            echo "ERROR: Cannot determine BUILT_PRODUCTS_DIR"
-            exit 1
-          fi
-          echo "BUILT_PRODUCTS_DIR=$BUILT_DIR"
-          MODULES="EXConstants Expo ExpoAsset ExpoDomWebView ExpoKeepAwake ExpoLogBox RNScreens"
-          for mod in $MODULES; do
-            mkdir -p "$BUILT_DIR/$mod"
-            MODULEMAP="$BUILT_DIR/$mod/$mod.modulemap"
-            if [ ! -f "$MODULEMAP" ]; then
-              echo "framework module $mod {}" > "$MODULEMAP"
-            fi
-          done
-          echo "BUILT_DIR=$BUILT_DIR" >> $GITHUB_ENV
-
       - name: Build .app bundle (unsigned)
         run: |
           set -o pipefail
