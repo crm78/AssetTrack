@@ -38,6 +38,7 @@ jobs:
 
       - name: Build .app bundle (unsigned)
         run: |
+          set -o pipefail
           cd ios
           xcodebuild \
             -workspace AssetTrack.xcworkspace \
@@ -47,27 +48,27 @@ jobs:
             build \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_ALLOWED=NO \
-            CONFIGURATION_BUILD_DIR=${{ runner.temp }}/build > ${{ runner.temp }}/xcodebuild.log 2>&1 || { \
-              echo "=== BUILD FAILED ==="; \
-              tail -80 ${{ runner.temp }}/xcodebuild.log; \
-              exit 1; \
-            }
+            -derivedDataPath ${{ runner.temp }}/derivedData \
+            2>&1 | tee ${{ runner.temp }}/xcodebuild.log
 
-      - name: Ad-hoc sign the .app
+      - name: Locate and sign the .app
         run: |
-          APP="${{ runner.temp }}/build/AssetTrack.app"
+          APP="${{ runner.temp }}/derivedData/Build/Products/Release-iphoneos/AssetTrack.app"
           if [ ! -d "$APP" ]; then
-            echo "ERROR: $APP not found"
-            ls -la ${{ runner.temp }}/build/ 2>/dev/null || echo "build dir empty"
+            echo "ERROR: $APP not found, searching..."
+            find ${{ runner.temp }}/derivedData -name "AssetTrack.app" -type d 2>/dev/null
+            ls -la ${{ runner.temp }}/derivedData/Build/Products/Release-iphoneos/ 2>/dev/null || true
             exit 1
           fi
+          echo "Found .app at: $APP"
           echo "Signing with ad-hoc identity..."
           codesign --force --sign - --deep "$APP" 2>&1 || echo "Warning: codesign failed (non-fatal)"
+          echo "APP_PATH=$APP" >> $GITHUB_ENV
 
       - name: Package IPA
         run: |
           mkdir -p dist/Payload
-          cp -r ${{ runner.temp }}/build/AssetTrack.app dist/Payload/
+          cp -r "$APP_PATH" dist/Payload/
           cd dist && zip -r AssetTrack.ipa Payload/
 
       - name: Upload IPA
