@@ -36,7 +36,7 @@ jobs:
           find Pods -name "*.pbxproj" -exec sed -i '' 's/shellScript = ".*Build ExpoModulesJSI xcframework.*/shellScript = "echo patched"/' {} \; 2>/dev/null || true
           find Pods -name "*.pbxproj" -exec sed -i '' 's/shellScript = ".*ExpoModulesJSI.*xcframework.*/shellScript = "echo patched"/' {} \; 2>/dev/null || true
 
-      - name: Build .app bundle
+      - name: Build .app bundle (unsigned)
         run: |
           cd ios
           xcodebuild \
@@ -45,30 +45,29 @@ jobs:
             -sdk iphoneos \
             -configuration Release \
             build \
-            CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_ALLOWED=YES \
-            SYMROOT=${{ runner.temp }}/xcodebuild 2>&1 | tee xcodebuild.log
-          EXIT_CODE=$?
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "=== LAST 80 LINES ==="
-            tail -80 xcodebuild.log
-            echo "=== ERROR LINES ==="
-            grep -n "error:" xcodebuild.log | head -20 || true
-            grep -B1 "failed" xcodebuild.log | head -10 || true
-            exit $EXIT_CODE
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_ALLOWED=NO \
+            CONFIGURATION_BUILD_DIR=${{ runner.temp }}/build > ${{ runner.temp }}/xcodebuild.log 2>&1 || { \
+              echo "=== BUILD FAILED ==="; \
+              tail -80 ${{ runner.temp }}/xcodebuild.log; \
+              exit 1; \
+            }
+
+      - name: Ad-hoc sign the .app
+        run: |
+          APP="${{ runner.temp }}/build/AssetTrack.app"
+          if [ ! -d "$APP" ]; then
+            echo "ERROR: $APP not found"
+            ls -la ${{ runner.temp }}/build/ 2>/dev/null || echo "build dir empty"
+            exit 1
           fi
+          echo "Signing with ad-hoc identity..."
+          codesign --force --sign - --deep "$APP" 2>&1 || echo "Warning: codesign failed (non-fatal)"
 
       - name: Package IPA
         run: |
-          APP_PATH=$(find ${{ runner.temp }}/xcodebuild -name "*.app" -type d | grep -v "\.app\." | head -1)
-          echo "App found at: $APP_PATH"
-          if [ -z "$APP_PATH" ]; then
-            echo "ERROR: No .app found in build output"
-            find ${{ runner.temp }}/xcodebuild -type d -maxdepth 5 2>/dev/null | head -30
-            exit 1
-          fi
           mkdir -p dist/Payload
-          cp -r "$APP_PATH" dist/Payload/
+          cp -r ${{ runner.temp }}/build/AssetTrack.app dist/Payload/
           cd dist && zip -r AssetTrack.ipa Payload/
 
       - name: Upload IPA
