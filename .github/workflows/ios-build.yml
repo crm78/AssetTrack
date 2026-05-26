@@ -36,6 +36,17 @@ jobs:
           find Pods -name "*.pbxproj" -exec sed -i '' 's/shellScript = ".*Build ExpoModulesJSI xcframework.*/shellScript = "echo patched"/' {} \; 2>/dev/null || true
           find Pods -name "*.pbxproj" -exec sed -i '' 's/shellScript = ".*ExpoModulesJSI.*xcframework.*/shellScript = "echo patched"/' {} \; 2>/dev/null || true
 
+      - name: Get build output path
+        run: |
+          cd ios
+          BUILT_DIR=$(xcodebuild -workspace AssetTrack.xcworkspace -scheme AssetTrack -sdk iphoneos -configuration Release -showBuildSettings 2>/dev/null | grep "^[[:space:]]*BUILT_PRODUCTS_DIR =" | sed 's/.*= //')
+          if [ -z "$BUILT_DIR" ]; then
+            echo "ERROR: Could not determine BUILT_PRODUCTS_DIR"
+            exit 1
+          fi
+          echo "BUILT_DIR=$BUILT_DIR"
+          echo "BUILT_DIR=$BUILT_DIR" >> $GITHUB_ENV
+
       - name: Build .app bundle (unsigned)
         run: |
           set -o pipefail
@@ -48,16 +59,17 @@ jobs:
             build \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_ALLOWED=NO \
-            -derivedDataPath ${{ runner.temp }}/derivedData \
             2>&1 | tee ${{ runner.temp }}/xcodebuild.log
 
-      - name: Locate and sign the .app
+      - name: Ad-hoc sign the .app
         run: |
-          APP="${{ runner.temp }}/derivedData/Build/Products/Release-iphoneos/AssetTrack.app"
+          APP="${{ env.BUILT_DIR }}/AssetTrack.app"
           if [ ! -d "$APP" ]; then
-            echo "ERROR: $APP not found, searching..."
-            find ${{ runner.temp }}/derivedData -name "AssetTrack.app" -type d 2>/dev/null
-            ls -la ${{ runner.temp }}/derivedData/Build/Products/Release-iphoneos/ 2>/dev/null || true
+            echo "ERROR: $APP not found"
+            echo "Contents of BUILT_DIR (${{ env.BUILT_DIR }}):"
+            ls -la "${{ env.BUILT_DIR }}" 2>/dev/null || echo "directory not found"
+            echo "Searching for AssetTrack.app in DerivedData..."
+            find ~/Library/Developer/Xcode/DerivedData -name "AssetTrack.app" -type d 2>/dev/null || true
             exit 1
           fi
           echo "Found .app at: $APP"
