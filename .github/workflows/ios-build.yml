@@ -38,6 +38,7 @@ jobs:
       - name: Build .app bundle (unsigned)
         run: |
           cd ios
+          set -o pipefail
           xcodebuild \
             -workspace AssetTrack.xcworkspace \
             -scheme AssetTrack \
@@ -45,7 +46,18 @@ jobs:
             -configuration Release \
             build \
             CODE_SIGNING_ALLOWED=NO \
-            CONFIGURATION_BUILD_DIR=${{ runner.temp }}/build
+            CONFIGURATION_BUILD_DIR=${{ runner.temp }}/build 2>&1 | tee xcodebuild.log
+          EXIT_CODE=$?
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo ""
+            echo "========== ERROR SUMMARY =========="
+            grep -n -E "(error:|fatal error:|FAILED|Command [^ ]+ failed|clang: error|ld: error)" xcodebuild.log || echo "(no standard errors found, checking for other failure patterns...)"
+            grep -n -E "(error|Error|ERROR)" xcodebuild.log | head -30 || true
+            echo ""
+            echo "========== LAST 50 LINES =========="
+            tail -50 xcodebuild.log
+            exit $EXIT_CODE
+          fi
 
       - name: Package IPA
         run: |
