@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Generate iOS project
+      - name: Generate iOS project and install Pods
         run: npx expo prebuild --platform ios --no-install
 
       - name: Install CocoaPods
@@ -35,24 +35,47 @@ jobs:
           cd ios
           pod install
 
-      - name: Patch ExpoModulesJSI xcframework build
+      - name: Fix ExpoModulesJSI build for unsigned CI
         run: |
-          cd ios
-          find Pods -name "*.pbxproj" -exec sed -i '' 's/shellScript = ".*Build ExpoModulesJSI xcframework.*/shellScript = "echo patched"/' {} \; 2>/dev/null || true
-          find Pods -name "*.pbxproj" -exec sed -i '' 's/shellScript = ".*ExpoModulesJSI.*xcframework.*/shellScript = "echo patched"/' {} \; 2>/dev/null || true
+          # The build-xcframework.sh uses `env -i` which clears CODE_SIGNING_ALLOWED=NO
+          # Add it so the nested xcodebuild doesn't try to code sign
+          cd node_modules/expo-modules-jsi/apple/scripts
+          cp build-xcframework.sh build-xcframework.sh.bak
+          sed -i '' 's|env -i PATH="$PATH" HOME="$HOME" PODS_ROOT="$PODS_ROOT" RN_ROOT="$RN_ROOT" \\|env -i PATH="$PATH" HOME="$HOME" PODS_ROOT="$PODS_ROOT" RN_ROOT="$RN_ROOT" CODE_SIGNING_ALLOWED=NO \\|' build-xcframework.sh
 
-      - name: Build archive (unsigned)
+      - name: Build .app bundle (unsigned)
         run: |
           set -o pipefail
           cd ios
-          SCHEME=$(xcodebuild -list -workspace AssetTrack.xcworkspace -json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['workspace']['schemes'][0])")
-          echo "Scheme: $SCHEME"
-          xcodebuild archive \
+          # First pass: build all Pod targets to generate their module maps
+          echo "=== Building Pod module maps first ==="
+          xcodebuild \
             -workspace AssetTrack.xcworkspace \
-            -scheme "$SCHEME" \
-            -configuration Release \
-            -archivePath ${{ runner.temp }}/AssetTrack.xcarchive \
+            -scheme AssetTrack \
             -sdk iphoneos \
+            -configuration Release \
+            build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            -only-target EXConstants \
+            -only-target Expo \
+            -only-target ExpoAsset \
+            -only-target ExpoDomWebView \
+            -only-target ExpoKeepAwake \
+            -only-target ExpoLogBox \
+            -only-target RNScreens \
+            2>&1 | tee ${{ runner.temp }}/pods-build.log
+
+          echo ""
+          echo "=== Building full app ==="
+          # Second pass: build everything including the main target
+          xcodebuild \
+            -workspace AssetTrack.xcworkspace \
+            -scheme AssetTrack \
+            -sdk iphoneos \
+            -configuration Release \
+            build \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
@@ -60,10 +83,11 @@ jobs:
 
       - name: Ad-hoc sign and package IPA
         run: |
-          APP="${{ runner.temp }}/AssetTrack.xcarchive/Products/Applications/AssetTrack.app"
-          if [ ! -d "$APP" ]; then
-            echo "ERROR: .app not found at $APP"
-            find ${{ runner.temp }}/AssetTrack.xcarchive -name "*.app" -type d 2>/dev/null
+          echo "Searching for AssetTrack.app..."
+          APP=$(find ~/Library/Developer/Xcode/DerivedData -name "AssetTrack.app" -type d -path "*/Release-iphoneos/*" 2>/dev/null | head -1)
+          if [ -z "$APP" ]; then
+            echo "ERROR: AssetTrack.app not found"
+            find ~/Library/Developer/Xcode/DerivedData -name "*.app" -type d 2>/dev/null || true
             exit 1
           fi
           echo "Found .app at: $APP"
