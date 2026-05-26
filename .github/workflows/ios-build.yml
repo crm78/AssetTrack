@@ -35,38 +35,51 @@ jobs:
       - name: Generate iOS project and install Pods
         run: npx expo prebuild --platform ios
 
-      - name: Build .app bundle (unsigned)
+      - name: Build iOS archive (unsigned)
         run: |
           cd ios
           set -o pipefail
-          xcodebuild \
+          xcodebuild archive \
             -workspace AssetTrack.xcworkspace \
             -scheme AssetTrack \
             -sdk iphoneos \
             -configuration Release \
-            build \
-            CODE_SIGNING_ALLOWED=NO \
-            CONFIGURATION_BUILD_DIR=${{ runner.temp }}/build 2>&1 | tee xcodebuild.log
+            -archivePath ${{ runner.temp }}/AssetTrack.xcarchive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee xcodebuild.log
+
           EXIT_CODE=$?
           if [ $EXIT_CODE -ne 0 ]; then
-            echo ""
-            echo "========== ERROR SUMMARY =========="
-            grep -n -E "(error:|fatal error:|FAILED|Command [^ ]+ failed|clang: error|ld: error)" xcodebuild.log || echo "(no standard errors found, checking for other failure patterns...)"
-            grep -n -E "(error|Error|ERROR)" xcodebuild.log | head -30 || true
-            echo ""
-            echo "========== LAST 50 LINES =========="
-            tail -50 xcodebuild.log
+            echo "========== BUILD FAILED =========="
+            echo "Last 100 lines:"
+            tail -100 xcodebuild.log
+            echo "========== ERROR LINES =========="
+            grep -n "error:" xcodebuild.log | head -20 || true
+            grep -n "fatal" xcodebuild.log | head -10 || true
+            echo "========== COMMANDS FAILED =========="
+            grep -B1 "failed" xcodebuild.log | tail -20 || true
             exit $EXIT_CODE
           fi
 
       - name: Package IPA
         run: |
-          mkdir -p dist/Payload
-          cp -r ${{ runner.temp }}/build/AssetTrack.app dist/Payload/
-          cd dist && zip -r AssetTrack.ipa Payload/
+          mkdir -p dist
+          xcodebuild -exportArchive \
+            -archivePath ${{ runner.temp }}/AssetTrack.xcarchive \
+            -exportPath dist \
+            -exportOptionsPlist /dev/stdin <<<'<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>method</key><string>development</string><key>signingAllowed</key><false/></dict></plist>' 2>&1 || {
+            echo "Export failed, trying manual packaging..."
+            mkdir -p dist/Payload
+            cp -r "${{ runner.temp }}/AssetTrack.xcarchive/Products/Applications/AssetTrack.app" dist/Payload/
+            cd dist && zip -r AssetTrack.ipa Payload/
+          }
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: AssetTrack-ipa
-          path: dist/AssetTrack.ipa
+          path: dist/*.ipa
