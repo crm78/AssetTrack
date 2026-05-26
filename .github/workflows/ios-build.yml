@@ -27,8 +27,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Generate iOS project and install Pods
-        run: npx expo prebuild --platform ios
+      - name: Generate iOS project
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          pod install
 
       - name: Patch ExpoModulesJSI xcframework build
         run: |
@@ -36,51 +41,37 @@ jobs:
           find Pods -name "*.pbxproj" -exec sed -i '' 's/shellScript = ".*Build ExpoModulesJSI xcframework.*/shellScript = "echo patched"/' {} \; 2>/dev/null || true
           find Pods -name "*.pbxproj" -exec sed -i '' 's/shellScript = ".*ExpoModulesJSI.*xcframework.*/shellScript = "echo patched"/' {} \; 2>/dev/null || true
 
-      - name: Get build output path
-        run: |
-          cd ios
-          BUILT_DIR=$(xcodebuild -workspace AssetTrack.xcworkspace -scheme AssetTrack -sdk iphoneos -configuration Release -showBuildSettings 2>/dev/null | grep "^[[:space:]]*BUILT_PRODUCTS_DIR =" | sed 's/.*= //')
-          if [ -z "$BUILT_DIR" ]; then
-            echo "ERROR: Could not determine BUILT_PRODUCTS_DIR"
-            exit 1
-          fi
-          echo "BUILT_DIR=$BUILT_DIR"
-          echo "BUILT_DIR=$BUILT_DIR" >> $GITHUB_ENV
-
-      - name: Build .app bundle (unsigned)
+      - name: Build archive (unsigned)
         run: |
           set -o pipefail
           cd ios
-          xcodebuild \
+          SCHEME=$(xcodebuild -list -workspace AssetTrack.xcworkspace -json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['workspace']['schemes'][0])")
+          echo "Scheme: $SCHEME"
+          xcodebuild archive \
             -workspace AssetTrack.xcworkspace \
-            -scheme AssetTrack \
-            -sdk iphoneos \
+            -scheme "$SCHEME" \
             -configuration Release \
-            build \
+            -archivePath ${{ runner.temp }}/AssetTrack.xcarchive \
+            -sdk iphoneos \
             CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee ${{ runner.temp }}/xcodebuild.log
 
-      - name: Ad-hoc sign the .app
+      - name: Ad-hoc sign and package IPA
         run: |
-          APP="${{ env.BUILT_DIR }}/AssetTrack.app"
+          APP="${{ runner.temp }}/AssetTrack.xcarchive/Products/Applications/AssetTrack.app"
           if [ ! -d "$APP" ]; then
-            echo "ERROR: $APP not found"
-            echo "Contents of BUILT_DIR (${{ env.BUILT_DIR }}):"
-            ls -la "${{ env.BUILT_DIR }}" 2>/dev/null || echo "directory not found"
-            echo "Searching for AssetTrack.app in DerivedData..."
-            find ~/Library/Developer/Xcode/DerivedData -name "AssetTrack.app" -type d 2>/dev/null || true
+            echo "ERROR: .app not found at $APP"
+            find ${{ runner.temp }}/AssetTrack.xcarchive -name "*.app" -type d 2>/dev/null
             exit 1
           fi
           echo "Found .app at: $APP"
           echo "Signing with ad-hoc identity..."
           codesign --force --sign - --deep "$APP" 2>&1 || echo "Warning: codesign failed (non-fatal)"
-          echo "APP_PATH=$APP" >> $GITHUB_ENV
-
-      - name: Package IPA
-        run: |
+          echo "Packaging IPA..."
           mkdir -p dist/Payload
-          cp -r "$APP_PATH" dist/Payload/
+          cp -r "$APP" dist/Payload/
           cd dist && zip -r AssetTrack.ipa Payload/
 
       - name: Upload IPA
