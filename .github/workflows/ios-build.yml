@@ -35,25 +35,15 @@ jobs:
           cd ios
           pod install
 
-      - name: Fix ExpoModulesJSI for unsigned CI build
+      - name: Patch ExpoModulesJSI build script phase
         run: |
-          SCRIPT="node_modules/expo-modules-jsi/apple/scripts/build-xcframework.sh"
-          cp "$SCRIPT" "$SCRIPT.bak"
-          echo '#!/bin/bash' > "$SCRIPT"
-          echo 'set -euo pipefail' >> "$SCRIPT"
-          echo 'PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' >> "$SCRIPT"
-          echo 'XCFRAMEWORK_PATH="${PACKAGE_DIR}/Products/ExpoModulesJSI.xcframework"' >> "$SCRIPT"
-          echo 'for slice_dir in "$XCFRAMEWORK_PATH"/*/; do' >> "$SCRIPT"
-          echo '  [ -d "$slice_dir" ] || continue' >> "$SCRIPT"
-          echo '  framework_dir="${slice_dir}ExpoModulesJSI.framework"' >> "$SCRIPT"
-          echo '  modules_dir="$framework_dir/Modules"' >> "$SCRIPT"
-          echo '  mkdir -p "$modules_dir"' >> "$SCRIPT"
-          echo '  echo "framework module ExpoModulesJSI { export * }" > "$modules_dir/module.modulemap"' >> "$SCRIPT"
-          echo 'done' >> "$SCRIPT"
-          chmod +x "$SCRIPT"
-          echo "Replaced build-xcframework.sh with stub"
+          cd ios
+          find Pods -name "*.pbxproj" -exec sed -i '' 's/shellScript = ".*Build ExpoModulesJSI xcframework.*/shellScript = "echo patched"/' {} \; 2>/dev/null || true
+          find Pods -name "*.pbxproj" -exec sed -i '' 's/shellScript = ".*ExpoModulesJSI.*xcframework.*/shellScript = "echo patched"/' {} \; 2>/dev/null || true
+          echo "Patched ExpoModulesJSI build script phase in pbxproj files"
 
       - name: Build .app bundle (unsigned)
+        continue-on-error: true
         run: |
           set -o pipefail
           cd ios
@@ -62,11 +52,34 @@ jobs:
             -scheme AssetTrack \
             -sdk iphoneos \
             -configuration Release \
+            -destination 'generic/platform=iOS' \
             build \
-            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee ${{ runner.temp }}/xcodebuild.log
+
+      - name: Extract Swift/compiler errors from build log
+        if: always()
+        run: |
+          echo "=== Swift compilation errors ==="
+          grep -n "error:" ${{ runner.temp }}/xcodebuild.log | grep -i "swift" | head -30 || echo "(no Swift errors found)"
+          echo ""
+          echo "=== All errors ==="
+          grep -n "error:" ${{ runner.temp }}/xcodebuild.log | head -30 || echo "(no errors found)"
+          echo ""
+          echo "=== FAILED lines ==="
+          grep -n "BUILD FAILED\|FAILED\|failed\|error:" ${{ runner.temp }}/xcodebuild.log | head -20 || echo "(no failure lines found)"
+
+      - name: Check xcodebuild exit and continue if successful
+        if: always()
+        run: |
+          if grep -q "BUILD SUCCEEDED" ${{ runner.temp }}/xcodebuild.log; then
+            echo "BUILD SUCCEEDED - continuing packaging"
+          else
+            echo "BUILD FAILED - check errors above"
+            exit 1
+          fi
 
       - name: Ad-hoc sign and package IPA
         run: |
