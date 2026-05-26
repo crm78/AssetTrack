@@ -35,35 +35,47 @@ jobs:
           cd ios
           pod install
 
-      - name: Pre-create module maps for Pod targets
+      - name: Fix ExpoModulesJSI for unsigned CI build
+        run: |
+          # Replace the real build-xcframework.sh with a stub that:
+          # 1. Creates module.map in each xcframework slice (needed by Swift)
+          # 2. Always exits 0 (the real script fails under CI because the
+          #    nested xcodebuild can't sign, killing the entire build chain)
+          SCRIPT="node_modules/expo-modules-jsi/apple/scripts/build-xcframework.sh"
+          cp "$SCRIPT" "$SCRIPT.bak"
+          cat > "$SCRIPT" << 'STUB'
+#!/bin/bash
+set -euo pipefail
+PACKAGE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
+XCFRAMEWORK_PATH="${PACKAGE_DIR}/Products/ExpoModulesJSI.xcframework"
+for slice_dir in "$XCFRAMEWORK_PATH"/*/; do
+  [ -d "$slice_dir" ] || continue
+  framework_dir="${slice_dir}ExpoModulesJSI.framework"
+  modules_dir="$framework_dir/Modules"
+  mkdir -p "$modules_dir"
+  echo 'framework module ExpoModulesJSI { export * }' > "$modules_dir/module.modulemap"
+done
+STUB
+          chmod +x "$SCRIPT"
+          echo "Replaced build-xcframework.sh with stub"
+
+      - name: Pre-create stub module maps for remaining pods
         run: |
           cd ios
-          # Get the build output directory before building
           BUILT_DIR=$(xcodebuild -workspace AssetTrack.xcworkspace -scheme AssetTrack -sdk iphoneos -configuration Release -showBuildSettings 2>/dev/null | grep "^[[:space:]]*BUILT_PRODUCTS_DIR" | sed 's/.*= //')
-          echo "BUILT_PRODUCTS_DIR=$BUILT_DIR"
-
           if [ -z "$BUILT_DIR" ]; then
             echo "ERROR: Cannot determine BUILT_PRODUCTS_DIR"
             exit 1
           fi
-
-          # Create stub module maps for pods that fail to generate them during build.
-          # These are static frameworks with DEFINES_MODULE=YES (or CocoaPods
-          # auto-generates them), but the xcframework build chain (ExpoModulesJSI->Expo->...)
-          # can break under unsigned CI, preventing the module maps from appearing
-          # in BUILT_PRODUCTS_DIR before the main target's Swift compilation needs them.
-          # A stub (``framework module N {}``) is enough to satisfy Clang's module
-          # resolver; the real module map is overlaid when the pod target completes.
-          MODULES="EXConstants Expo ExpoAsset ExpoDomWebView ExpoKeepAwake ExpoLogBox RNScreens ExpoModulesJSI"
+          echo "BUILT_PRODUCTS_DIR=$BUILT_DIR"
+          MODULES="EXConstants Expo ExpoAsset ExpoDomWebView ExpoKeepAwake ExpoLogBox RNScreens"
           for mod in $MODULES; do
             mkdir -p "$BUILT_DIR/$mod"
             MODULEMAP="$BUILT_DIR/$mod/$mod.modulemap"
             if [ ! -f "$MODULEMAP" ]; then
               echo "framework module $mod {}" > "$MODULEMAP"
-              echo "Created stub: $MODULEMAP"
             fi
           done
-
           echo "BUILT_DIR=$BUILT_DIR" >> $GITHUB_ENV
 
       - name: Build .app bundle (unsigned)
@@ -86,8 +98,6 @@ jobs:
           echo "Searching for AssetTrack.app..."
           APP=$(find ~/Library/Developer/Xcode/DerivedData -name "AssetTrack.app" -type d -path "*/Release-iphoneos/*" 2>/dev/null | head -1)
           if [ -z "$APP" ]; then
-            echo "ERROR: AssetTrack.app not found"
-            # Try without path filter
             APP=$(find ~/Library/Developer/Xcode/DerivedData -name "AssetTrack.app" -type d 2>/dev/null | head -1)
             if [ -z "$APP" ]; then
               find ~/Library/Developer/Xcode/DerivedData -maxdepth 8 -name "*.app" -type d 2>/dev/null || true
@@ -95,9 +105,7 @@ jobs:
             fi
           fi
           echo "Found .app at: $APP"
-          echo "Signing with ad-hoc identity..."
           codesign --force --sign - --deep "$APP" 2>&1 || echo "Warning: codesign failed (non-fatal)"
-          echo "Packaging IPA..."
           mkdir -p dist/Payload
           cp -r "$APP" dist/Payload/
           cd dist && zip -r AssetTrack.ipa Payload/
