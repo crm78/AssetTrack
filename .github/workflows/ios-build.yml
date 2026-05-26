@@ -15,9 +15,14 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git init
+          git remote add origin https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git
+          git fetch origin ${{ github.ref_name }}
+          git checkout ${{ github.sha }}
 
       - uses: actions/setup-node@v4
         with:
